@@ -17,7 +17,7 @@ from itertools import combinations
 # Import our modules
 from portfolio_data_pipeline import run_complete_data_pipeline
 from autoencoder_compression import run_autoencoder_compression, decode_portfolio_weights
-from qubo_portfolio_optimizer import run_portfolio_qaoa, build_qubo_matrix
+from qubo_portfolio_optimizer import run_portfolio_qaoa_real, build_qubo_matrix
 
 
 def calculate_portfolio_metrics(
@@ -315,25 +315,27 @@ def run_complete_pipeline(
     # ========================================
     print("\n[STEP 3/5] QAOA - Quantum Approximate Optimization")
     print("-" * 80)
-    qaoa_result = run_portfolio_qaoa(
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+    api_key = os.getenv("IBM_QUANTUM_TOKEN")
+    backend_name = os.getenv("QUANTUM_BACKEND", "ibm_torino")
+    qaoa_result = run_portfolio_qaoa_real(
         mu=compression_result['mu_latent'],
         Sigma=compression_result['Sigma_latent'],
+        api_key=api_key,
+        backend_name=backend_name,
         risk_penalty=risk_penalty,
         cardinality_penalty=cardinality_penalty,
         target_cardinality=target_cardinality,
         qaoa_depth=qaoa_depth,
-        noise_level=noise_level,
-        use_zne=use_zne,
         maxiter=maxiter
     )
     
     print(f"\n[OK] QAOA Optimization Complete:")
     print(f"  - Solution Bitstring: {qaoa_result['optimal_bitstring']}")
-    print(f"  - Selected Latent Factors: {qaoa_result['optimal_solution'].sum()}/{latent_dim}")
-    print(f"  - Energy (with noise): {qaoa_result['energy_noisy']:.6f}")
-    if use_zne:
-        print(f"  - Energy (ZNE corrected): {qaoa_result['energy_zne']:.6f}")
-        print(f"  - Noise Mitigation Gain: {abs(qaoa_result['energy_noisy'] - qaoa_result['energy_zne']):.6f}")
+    print(f"  - Selected Latent Factors: {qaoa_result['optimal_solution'].sum() if qaoa_result['optimal_solution'] is not None else 'N/A'}/{latent_dim}")
+    print(f"  - Energy (real backend): {qaoa_result['energy_real']:.6f}")
     
     # ========================================
     # STEP 4: Classical Comparison (Optional)

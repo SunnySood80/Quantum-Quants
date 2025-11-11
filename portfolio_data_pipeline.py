@@ -12,6 +12,8 @@ import io
 import time
 from typing import Dict, Tuple, List
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+import os
+import pickle
 
 
 def fetch_sp500_tickers() -> pd.DataFrame:
@@ -425,6 +427,33 @@ def run_complete_data_pipeline(
     print("STARTING PORTFOLIO DATA PIPELINE")
     print("="*60)
     
+    # Check for cached pipeline output to avoid repeated downloads
+    cache_dir = os.path.join(os.getcwd(), "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(cache_dir, f"data_pipeline_{period}_{interval}.pkl")
+
+    if os.path.exists(cache_file):
+        try:
+            print(f"Loading cached pipeline data from {cache_file} (skips downloads)")
+            with open(cache_file, "rb") as f:
+                cached = pickle.load(f)
+
+            # If max_tickers is specified, trim the cached results accordingly
+            if max_tickers is not None and max_tickers > 0:
+                tickers = cached['tickers'][:max_tickers]
+                return {
+                    'tickers': tickers,
+                    'close_df': cached['close_df'][tickers],
+                    'log_returns': cached['log_returns'][tickers],
+                    'mu': cached['mu'][tickers],
+                    'Sigma': cached['Sigma'].loc[tickers, tickers],
+                    'fundamentals': cached['fundamentals'].loc[tickers]
+                }
+
+            return cached
+        except Exception as e:
+            print(f"Warning: failed to load cache ({e}), will re-run pipeline")
+
     # Fetch tickers
     tickers_df = fetch_sp500_tickers()
     if tickers_df.empty:
@@ -466,7 +495,7 @@ def run_complete_data_pipeline(
     print(f"mu: {len(mu[common_tickers])}")
     print(f"Sigma: {Sigma.loc[common_tickers, common_tickers].shape}")
     
-    return {
+    result = {
         'tickers': common_tickers,
         'close_df': close_df[common_tickers],
         'log_returns': log_ret[common_tickers],
@@ -474,6 +503,19 @@ def run_complete_data_pipeline(
         'Sigma': Sigma.loc[common_tickers, common_tickers],
         'fundamentals': fund_clean.loc[common_tickers]
     }
+
+    # Save to cache for faster subsequent runs
+    try:
+        cache_dir = os.path.join(os.getcwd(), "cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_file = os.path.join(cache_dir, f"data_pipeline_{period}_{interval}.pkl")
+        with open(cache_file, "wb") as f:
+            pickle.dump(result, f)
+        print(f"Cached pipeline output to {cache_file}")
+    except Exception as e:
+        print(f"Warning: failed to write cache ({e})")
+
+    return result
 
 
 if __name__ == "__main__":
