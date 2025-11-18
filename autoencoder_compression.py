@@ -17,9 +17,9 @@ class PortfolioAutoencoder(nn.Module):
     """
     Autoencoder that compresses return patterns with fundamental guidance.
     
-    Architecture (deeper for large datasets):
-    - Encoder: Returns [N x T] + Fundamentals [N x F] -> 384 oayk-> 256 -> 128 -> 64 -> 32 -> 16 -> Latent [N x D]
-    - Decoder: Latent [N x D] -> 16 -> 32 -> 64 -> 128 -> 256 -> 384 -> Returns [N x T]
+    Architecture (6-layer deeper network for better capacity):
+    - Encoder: Returns [N x T] + Fundamentals [N x F] -> 384 -> 256 -> 128 -> 64 -> 32 -> Latent [N x D]
+    - Decoder: Latent [N x D] -> 32 -> 64 -> 128 -> 256 -> 384 -> Returns [N x T]
     
     Where D = latent_dim (typically 8-20)
     """
@@ -33,7 +33,7 @@ class PortfolioAutoencoder(nn.Module):
         self.latent_dim = latent_dim
         
         # Encoder: Returns + Fundamentals -> Latent
-        # Deeper architecture for large dataset (501 stocks)
+        # Deeper 6-layer architecture for higher capacity
         encoder_input_dim = n_timesteps + n_features
         self.encoder = nn.Sequential(
             nn.Linear(encoder_input_dim, 384),
@@ -51,19 +51,13 @@ class PortfolioAutoencoder(nn.Module):
             nn.Linear(64, 32),
             nn.ReLU(),
             nn.BatchNorm1d(32),
-            nn.Linear(32, 16),
-            nn.ReLU(),
-            nn.BatchNorm1d(16),
-            nn.Linear(16, latent_dim)
+            nn.Linear(32, latent_dim)
         )
         
         # Decoder: Latent -> Returns
         # Mirror architecture
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 16),
-            nn.ReLU(),
-            nn.BatchNorm1d(16),
-            nn.Linear(16, 32),
+            nn.Linear(latent_dim, 32),
             nn.ReLU(),
             nn.BatchNorm1d(32),
             nn.Linear(32, 64),
@@ -186,7 +180,7 @@ def train_autoencoder(
     n_features = features_tensor.shape[1]
     
     print("Training autoencoder neural network...")
-    print(f"  - Architecture: {n_timesteps+n_features} -> 384 -> 256 -> 128 -> 64 -> 32 -> 16 -> {latent_dim} -> 16 -> 32 -> 64 -> 128 -> 256 -> 384 -> {n_timesteps}")
+    print(f"  - Architecture: {n_timesteps+n_features} -> 384 -> 256 -> 128 -> 64 -> 32 -> {latent_dim} -> 32 -> 64 -> 128 -> 256 -> 384 -> {n_timesteps}")
     print(f"  - Training samples: {n_stocks} stocks")
     print(f"  - Epochs: {epochs} | Batch size: {batch_size} | Learning rate: {lr}")
     print(f"  - Weight decay: 1e-5 (L2 regularization)")

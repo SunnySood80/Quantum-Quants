@@ -10,6 +10,9 @@ import requests
 import yfinance as yf
 import io
 import time
+import pickle
+import os
+from datetime import datetime, timedelta
 from typing import Dict, Tuple, List
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 
@@ -405,18 +408,98 @@ def clean_fundamentals_vif(fund_df: pd.DataFrame, vif_threshold: float = 10.0) -
     return X
 
 
+def get_cache_path(period: str, interval: str, max_tickers: int = None) -> str:
+    """
+    Generate cache file path based on parameters.
+    
+    Args:
+        period: Time period for price data
+        interval: Data interval
+        max_tickers: Maximum number of tickers
+        
+    Returns:
+        Path to cache file
+    """
+    cache_dir = "data_cache"
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    ticker_str = f"max{max_tickers}" if max_tickers else "all"
+    cache_filename = f"sp500_data_{period}_{interval}_{ticker_str}.pkl"
+    return os.path.join(cache_dir, cache_filename)
+
+
+def save_data_cache(data: Dict, cache_path: str) -> None:
+    """
+    Save pipeline data to cache file.
+    
+    Args:
+        data: Pipeline output dictionary
+        cache_path: Path to save cache file
+    """
+    cache_data = {
+        'timestamp': datetime.now(),
+        'data': data
+    }
+    
+    with open(cache_path, 'wb') as f:
+        pickle.dump(cache_data, f)
+    
+    print(f"\n[OK] Data cached to: {cache_path}")
+
+
+def load_data_cache(cache_path: str, max_age_hours: int = 24) -> Dict:
+    """
+    Load pipeline data from cache if it exists and is fresh.
+    
+    Args:
+        cache_path: Path to cache file
+        max_age_hours: Maximum age of cache in hours
+        
+    Returns:
+        Cached data dictionary, or None if cache is invalid/old
+    """
+    if not os.path.exists(cache_path):
+        return None
+    
+    try:
+        with open(cache_path, 'rb') as f:
+            cache_data = pickle.load(f)
+        
+        # Check cache age
+        cache_time = cache_data['timestamp']
+        age = datetime.now() - cache_time
+        
+        if age > timedelta(hours=max_age_hours):
+            print(f"\n[INFO] Cache is {age.total_seconds()/3600:.1f} hours old (max: {max_age_hours}h)")
+            print("[INFO] Cache expired - will fetch fresh data")
+            return None
+        
+        print(f"\n[OK] Loading data from cache (age: {age.total_seconds()/3600:.1f}h)")
+        print(f"[OK] Cache path: {cache_path}")
+        return cache_data['data']
+        
+    except Exception as e:
+        print(f"\n[WARNING] Failed to load cache: {e}")
+        print("[INFO] Will fetch fresh data")
+        return None
+
+
 def run_complete_data_pipeline(
     period: str = "2y",
     interval: str = "1d",
-    max_tickers: int = None
+    max_tickers: int = None,
+    force_refresh: bool = False,
+    cache_max_age_hours: int = 24
 ) -> Dict:
     """
-    Run the complete data pipeline.
+    Run the complete data pipeline with caching support.
     
     Args:
         period: Time period for price data
         interval: Data interval
         max_tickers: Maximum number of tickers to use (None for all S&P 500)
+        force_refresh: If True, ignore cache and fetch fresh data
+        cache_max_age_hours: Maximum age of cache in hours (default: 24)
         
     Returns:
         Dictionary with all pipeline outputs
@@ -424,6 +507,23 @@ def run_complete_data_pipeline(
     print("\n" + "="*60)
     print("STARTING PORTFOLIO DATA PIPELINE")
     print("="*60)
+    
+    # Get cache path
+    cache_path = get_cache_path(period, interval, max_tickers)
+    
+    # Try to load from cache (unless force_refresh)
+    if not force_refresh:
+        cached_data = load_data_cache(cache_path, cache_max_age_hours)
+        if cached_data is not None:
+            print("[OK] Using cached data - FAST! (No download needed)")
+            print("="*60)
+            return cached_data
+    
+    # Cache miss or force refresh - fetch fresh data
+    if force_refresh:
+        print("[INFO] Force refresh enabled - fetching fresh data")
+    else:
+        print("[INFO] No valid cache found - fetching fresh data")
     
     # Fetch tickers
     tickers_df = fetch_sp500_tickers()
@@ -466,7 +566,8 @@ def run_complete_data_pipeline(
     print(f"mu: {len(mu[common_tickers])}")
     print(f"Sigma: {Sigma.loc[common_tickers, common_tickers].shape}")
     
-    return {
+    # Build result dictionary
+    result = {
         'tickers': common_tickers,
         'close_df': close_df[common_tickers],
         'log_returns': log_ret[common_tickers],
@@ -474,6 +575,11 @@ def run_complete_data_pipeline(
         'Sigma': Sigma.loc[common_tickers, common_tickers],
         'fundamentals': fund_clean.loc[common_tickers]
     }
+    
+    # Save to cache for next time
+    save_data_cache(result, cache_path)
+    
+    return result
 
 
 if __name__ == "__main__":

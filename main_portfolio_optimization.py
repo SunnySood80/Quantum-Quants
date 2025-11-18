@@ -218,9 +218,11 @@ def run_complete_pipeline(
     period: str = "2y",
     interval: str = "1d",
     max_tickers: int = None,
+    force_refresh: bool = False,
+    cache_max_age_hours: int = 24,
     
     # Autoencoder parameters
-    latent_dim: int = 8,
+    latent_dim: int = 16,
     ae_epochs: int = 200,
     
     # QAOA parameters
@@ -249,6 +251,8 @@ def run_complete_pipeline(
         period: Historical data period (e.g., "2y", "1y")
         interval: Data interval (e.g., "1d", "1h")
         max_tickers: Maximum number of tickers (None for all S&P 500)
+        force_refresh: If True, ignore cache and fetch fresh data
+        cache_max_age_hours: Maximum age of cache in hours (default: 24)
         latent_dim: Latent dimension for compression (default 8)
         ae_epochs: Autoencoder training epochs
         risk_penalty: QAOA risk penalty weight
@@ -280,7 +284,13 @@ def run_complete_pipeline(
     # ========================================
     print("\n[STEP 1/5] DATA PIPELINE - Fetching & Processing Market Data")
     print("-" * 80)
-    data = run_complete_data_pipeline(period=period, interval=interval, max_tickers=max_tickers)
+    data = run_complete_data_pipeline(
+        period=period,
+        interval=interval,
+        max_tickers=max_tickers,
+        force_refresh=force_refresh,
+        cache_max_age_hours=cache_max_age_hours
+    )
     
     print(f"\n[OK] Data Pipeline Complete:")
     print(f"  - Stocks: {len(data['tickers'])} tickers")
@@ -573,20 +583,65 @@ if __name__ == "__main__":
     print("Running complete quantum portfolio optimization pipeline...")
     print("This will take several minutes.\n")
     
+    # ========================================================================
+    # CONFIGURATION: SIMULATOR vs REAL QUANTUM HARDWARE
+    # ========================================================================
+    #
+    # DATA CACHING (NEW!):
+    # -----------------------------------------------------------------------
+    # - First run: Downloads S&P 500 data (~1-2 min)
+    # - Subsequent runs: Loads from cache (INSTANT!)
+    # - Cache expires after 24 hours (refreshes automatically)
+    # - To force refresh: set force_refresh=True
+    # - Cache location: ./data_cache/
+    #
+    # CURRENT MODE: SIMULATOR (for testing & development)
+    # -----------------------------------------------------------------------
+    # latent_dim = 16         ->  16 qubits (GOOD for real hardware!)
+    # qaoa_depth = 3          ->  ~5-7 min on simulator
+    # maxiter = 300           ->  Good convergence
+    #
+    # FOR REAL HARDWARE (IBM Brisbane/Kyoto): Uncomment section below
+    # -----------------------------------------------------------------------
+    # qaoa_depth = 2          ->  Shallower circuit = less errors!
+    # maxiter = 5             ->  Minimal but safe (~2 min runtime)
+    # 
+    # Why these changes?
+    #   - Real HW has ~0.1 sec per shot (vs instant on simulator)
+    #   - 10 min limit = need FAST execution for debugging
+    #   - Shallower circuits = fewer gate errors
+    #   - ZNE helps compensate for noise with fewer shots
+    #
+    # ========================================================================
+    
     # Run with default parameters - FULL S&P 500 (all ~503 tickers)
     results = run_complete_pipeline(
+        # Data parameters
         period="2y",
         interval="1d",
         max_tickers=None,  # Use ALL S&P 500 tickers (no limit!)
-        latent_dim=12,  # Changed from 8 -> Better reconstruction quality (41x compression instead of 62x)
+        force_refresh=False,  # Set to True to ignore cache and fetch fresh data
+        cache_max_age_hours=24,  # Cache expires after 24 hours
+        
+        # Autoencoder parameters
+        latent_dim=16,  # 16 qubits -> Low AE loss (~0.40-0.50) + Real HW ready!
         ae_epochs=200,
+        
+        # QAOA parameters
         risk_penalty=0.5,
-        cardinality_penalty=20.0,  # Increased from 5.0 - must be high enough to strictly enforce cardinality
+        cardinality_penalty=20.0,  # High penalty to enforce exactly 5 selections
         target_cardinality=5,
-        qaoa_depth=5,  # Increased from 3 for better convergence
+        
+        # SIMULATOR SETTINGS (current):
+        qaoa_depth=3,    # Good for testing (~5-7 min)
+        maxiter=300,     # Strong convergence
+        
+        # REAL HARDWARE SETTINGS (uncomment when ready):
+        # qaoa_depth=2,  # Faster + less errors on real HW
+        # maxiter=5,     # Safe for 10-min limit (~2 min runtime)
+        
         noise_level=0.01,
         use_zne=True,
-        maxiter=1000,  # Increased from 500 for better optimization
         run_classical=True,  # Enable classical comparison
         classical_method='auto'  # Use exhaustive for n<=10, greedy otherwise
     )
