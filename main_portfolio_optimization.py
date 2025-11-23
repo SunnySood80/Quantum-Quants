@@ -234,6 +234,10 @@ def run_complete_pipeline(
     use_zne: bool = True,
     maxiter: int = 500,
     
+    # Quantum Hardware Configuration
+    use_real_hardware: bool = False,
+    backend_name: str = "ibm_brisbane",
+    
     # Portfolio parameters
     top_n_stocks: int = None,
     
@@ -262,6 +266,8 @@ def run_complete_pipeline(
         noise_level: Simulation noise level
         use_zne: Use Zero-Noise Extrapolation
         maxiter: Max QAOA optimizer iterations
+        use_real_hardware: If True, run on IBM Quantum hardware; if False, use simulator
+        backend_name: Name of IBM Quantum backend (e.g., "ibm_brisbane", "ibm_kyoto")
         run_classical: Whether to run classical comparison
         classical_method: Classical solver method ('exhaustive', 'greedy', or 'auto')
         device: 'cpu' or 'cuda'
@@ -276,7 +282,8 @@ def run_complete_pipeline(
     print(f"  Period: {period} | Interval: {interval} | Max Tickers: {max_tickers or 'All S&P 500'}")
     print(f"  Latent Dim: {latent_dim} | AE Epochs: {ae_epochs} | QAOA Depth: {qaoa_depth}")
     print(f"  Risk Penalty: {risk_penalty} | Cardinality Target: {target_cardinality}")
-    print(f"  ZNE: {use_zne} | Noise Level: {noise_level}")
+    print(f"  Quantum Mode: {'🔬 REAL HARDWARE (' + backend_name + ')' if use_real_hardware else '💻 SIMULATOR'}")
+    print(f"  ZNE: {use_zne} | Noise Level: {noise_level if not use_real_hardware else 'N/A (real HW)'}")
     print("="*80)
     
     # ========================================
@@ -334,7 +341,9 @@ def run_complete_pipeline(
         qaoa_depth=qaoa_depth,
         noise_level=noise_level,
         use_zne=use_zne,
-        maxiter=maxiter
+        maxiter=maxiter,
+        use_real_hardware=use_real_hardware,
+        backend_name=backend_name
     )
     
     print(f"\n[OK] QAOA Optimization Complete:")
@@ -584,10 +593,16 @@ if __name__ == "__main__":
     print("This will take several minutes.\n")
     
     # ========================================================================
-    # CONFIGURATION: SIMULATOR vs REAL QUANTUM HARDWARE
+    # QUANTUM HARDWARE TOGGLE: Switch between Simulator and Real Hardware
     # ========================================================================
     #
-    # DATA CACHING (NEW!):
+    # 🎛️  EASY TOGGLE: Change this ONE variable to switch modes!
+    # ========================================================================
+    USE_QUANTUM_HARDWARE = False  # Set to True for real quantum computer!
+    BACKEND_NAME = "ibm_fez"  # Options: ibm_brisbane, ibm_kyoto, ibm_sherbrooke
+    
+    # ========================================================================
+    # DATA CACHING:
     # -----------------------------------------------------------------------
     # - First run: Downloads S&P 500 data (~1-2 min)
     # - Subsequent runs: Loads from cache (INSTANT!)
@@ -595,24 +610,48 @@ if __name__ == "__main__":
     # - To force refresh: set force_refresh=True
     # - Cache location: ./data_cache/
     #
-    # CURRENT MODE: SIMULATOR (for testing & development)
+    # ========================================================================
+    # PARAMETER RECOMMENDATIONS:
+    # ========================================================================
+    #
+    # SIMULATOR MODE (testing & development):
     # -----------------------------------------------------------------------
-    # latent_dim = 16         ->  16 qubits (GOOD for real hardware!)
-    # qaoa_depth = 3          ->  ~5-7 min on simulator
+    # latent_dim = 16         ->  16 qubits
+    # qaoa_depth = 3          ->  ~5-7 min runtime
     # maxiter = 300           ->  Good convergence
     #
-    # FOR REAL HARDWARE (IBM Brisbane/Kyoto): Uncomment section below
+    # REAL HARDWARE MODE (IBM Brisbane/Kyoto):
     # -----------------------------------------------------------------------
-    # qaoa_depth = 2          ->  Shallower circuit = less errors!
-    # maxiter = 5             ->  Minimal but safe (~2 min runtime)
+    # latent_dim = 16         ->  16 qubits (hardware ready!)
+    # qaoa_depth = 2          ->  Shallower circuit = fewer errors!
+    # maxiter = 5             ->  Fast execution (~2 min runtime)
     # 
-    # Why these changes?
+    # Why different parameters?
     #   - Real HW has ~0.1 sec per shot (vs instant on simulator)
-    #   - 10 min limit = need FAST execution for debugging
-    #   - Shallower circuits = fewer gate errors
-    #   - ZNE helps compensate for noise with fewer shots
+    #   - Shallower circuits = fewer gate errors on real hardware
+    #   - ZNE helps compensate for noise with fewer iterations
     #
     # ========================================================================
+    # FIRST-TIME SETUP FOR REAL HARDWARE:
+    # ========================================================================
+    # 1. Install: pip install qiskit-ibm-runtime
+    # 2. Get IBM account: https://quantum.ibm.com/
+    # 3. Save your API token (one-time):
+    #    from qiskit_ibm_runtime import QiskitRuntimeService
+    #    QiskitRuntimeService.save_account(channel="ibm_quantum", token="YOUR_TOKEN")
+    # ========================================================================
+    
+    # Adjust parameters based on mode
+    if USE_QUANTUM_HARDWARE:
+        # Optimized for real quantum hardware
+        qaoa_depth = 2     # Shallower = fewer errors
+        maxiter = 1        # ONE RUN ONLY
+        noise_level = 0.0  # Not used on real hardware
+    else:
+        # Optimized for simulator - MIDDLE GROUND
+        qaoa_depth = 2     # Faster on simulator
+        maxiter = 50       # More iterations for Sharpe > 1.0
+        noise_level = 0.01 # Simulate realistic noise
     
     # Run with default parameters - FULL S&P 500 (all ~503 tickers)
     results = run_complete_pipeline(
@@ -628,21 +667,20 @@ if __name__ == "__main__":
         ae_epochs=200,
         
         # QAOA parameters
-        risk_penalty=0.5,
-        cardinality_penalty=20.0,  # High penalty to enforce exactly 5 selections
-        target_cardinality=5,
+        risk_penalty=0.3,  # More return-focused for higher Sharpe
+        cardinality_penalty=12.0,  # Lower penalty for better selection flexibility
+        target_cardinality=7,  # More selections for better portfolio construction
+        qaoa_depth=qaoa_depth,    # Auto-adjusted based on mode
+        maxiter=maxiter,          # Auto-adjusted based on mode
+        noise_level=noise_level,  # Auto-adjusted based on mode
+        use_zne=False,  # DISABLED to save quantum time
         
-        # SIMULATOR SETTINGS (current):
-        qaoa_depth=3,    # Good for testing (~5-7 min)
-        maxiter=300,     # Strong convergence
+        # 🎛️ QUANTUM HARDWARE TOGGLE
+        use_real_hardware=USE_QUANTUM_HARDWARE,
+        backend_name=BACKEND_NAME,
         
-        # REAL HARDWARE SETTINGS (uncomment when ready):
-        # qaoa_depth=2,  # Faster + less errors on real HW
-        # maxiter=5,     # Safe for 10-min limit (~2 min runtime)
-        
-        noise_level=0.01,
-        use_zne=True,
-        run_classical=True,  # Enable classical comparison
+        # Classical comparison
+        run_classical=False,  # DISABLED to save time
         classical_method='auto'  # Use exhaustive for n<=10, greedy otherwise
     )
     

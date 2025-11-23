@@ -182,7 +182,9 @@ def run_qaoa_with_zne(
     noise_level: float = 0.01,
     use_zne: bool = True,
     noise_scales: list = None,
-    maxiter: int = 500
+    maxiter: int = 500,
+    use_real_hardware: bool = False,
+    backend_name: str = "ibm_brisbane"
 ) -> Dict:
     """
     Run QAOA with optional Zero-Noise Extrapolation.
@@ -194,6 +196,8 @@ def run_qaoa_with_zne(
         use_zne: Whether to use ZNE
         noise_scales: Noise scale factors for ZNE
         maxiter: Max optimizer iterations
+        use_real_hardware: If True, run on IBM Quantum hardware; if False, use simulator
+        backend_name: Name of IBM Quantum backend (e.g., "ibm_brisbane", "ibm_kyoto")
         
     Returns:
         Dictionary with QAOA results
@@ -201,7 +205,9 @@ def run_qaoa_with_zne(
     print(f"Setting up QAOA circuit with {'ZNE (Zero-Noise Extrapolation)' if use_zne else 'basic noise model'}")
     print(f"  - Qubits: {hamiltonian.num_qubits}")
     print(f"  - QAOA layers (p): {qaoa_depth}")
-    print(f"  - Noise level: {noise_level*100:.1f}% depolarizing error")
+    print(f"  - Mode: {'REAL QUANTUM HARDWARE' if use_real_hardware else 'SIMULATOR'}")
+    if not use_real_hardware:
+        print(f"  - Noise level: {noise_level*100:.1f}% depolarizing error")
     print(f"  - Max iterations: {maxiter}")
     
     n_qubits = hamiltonian.num_qubits
@@ -210,60 +216,142 @@ def run_qaoa_with_zne(
     qaoa_circuit = QAOAAnsatz(hamiltonian, reps=qaoa_depth)
     print(f"  - Circuit parameters: {qaoa_circuit.num_parameters} (2p = 2x{qaoa_depth})")
     
-    # Setup noisy backend
-    noise_model = create_noise_model(noise_level)
-    backend = AerSimulator(noise_model=noise_model)
+    # ========================================
+    # BACKEND SETUP: Real Hardware vs Simulator
+    # ========================================
     
-    # Transpile
-    pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
-    transpiled_circuit = pm.run(qaoa_circuit)
-    measured_circuit = transpiled_circuit.copy()
-    measured_circuit.measure_all()
-    print(f"  - Circuit compiled (optimization level 3)")
+    # Initialize circuit and observable variables
+    circuit_for_estimator = None
+    measured_circuit = None
+    padded_hamiltonian = hamiltonian  # Default to original
     
-    # Estimator
-    estimator = AerEstimator(backend_options={"noise_model": noise_model})
+    if use_real_hardware:
+        # REAL QUANTUM HARDWARE
+        try:
+            from qiskit_ibm_runtime import QiskitRuntimeService, EstimatorV2 as RuntimeEstimator, SamplerV2 as RuntimeSampler
+            
+            print(f"\n  🔌 Connecting to IBM Quantum Cloud...")
+            service = QiskitRuntimeService(channel="ibm_cloud")
+            backend = service.backend(backend_name)
+            
+            print(f"  ✓ Connected to: {backend.name}")
+            print(f"  - Backend qubits: {backend.num_qubits}")
+            print(f"  - Status: {backend.status().status_msg}")
+            print(f"  - Pending jobs: {backend.status().pending_jobs}")
+            
+            # For real hardware: Use session-based execution
+            # Let EstimatorV2 handle transpilation with optimize_for_estimator
+            from qiskit_ibm_runtime import Session
+            
+            # Transpile circuit for backend
+            pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+            isa_circuit = pm.run(qaoa_circuit)
+            print(f"  - Circuit transpiled to ISA (depth: {isa_circuit.depth()}, ops: {isa_circuit.size()})")
+            
+            # Transform observable to match transpiled circuit layout
+            from qiskit.quantum_info import SparsePauliOp
+            # Pad the Hamiltonian to match the full backend size
+            padded_hamiltonian = hamiltonian.apply_layout(isa_circuit.layout)
+            
+            circuit_for_estimator = isa_circuit
+            measured_circuit = isa_circuit.copy()
+            measured_circuit.measure_all()
+            
+            # Use Runtime Estimator (real hardware) 
+            estimator = RuntimeEstimator(mode=backend)
+            estimator.options.default_shots = 1024
+            is_real_hw = True
+            
+        except ImportError:
+            print(f"\n  ❌ ERROR: qiskit-ibm-runtime not installed!")
+            print(f"  Install with: pip install qiskit-ibm-runtime")
+            raise
+        except Exception as e:
+            print(f"\n  ❌ ERROR connecting to IBM Quantum: {e}")
+            print(f"  Make sure you've saved your API token:")
+            print(f"    from qiskit_ibm_runtime import QiskitRuntimeService")
+            print(f"    QiskitRuntimeService.save_account(channel='ibm_cloud', token='YOUR_TOKEN')")
+            raise
+    else:
+        # SIMULATOR
+        print(f"\n  💻 Using local quantum simulator...")
+        noise_model = create_noise_model(noise_level)
+        backend = AerSimulator(noise_model=noise_model)
+        
+        # Transpile
+        pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+        circuit_for_estimator = pm.run(qaoa_circuit)
+        measured_circuit = circuit_for_estimator.copy()
+        measured_circuit.measure_all()
+        print(f"  - Circuit compiled (optimization level 3)")
+        
+        # Estimator for simulator
+        estimator = AerEstimator(backend_options={"noise_model": noise_model})
+        is_real_hw = False
     
-    # Cost function
+    # Cost function (compatible with both real hardware and simulator)
     def cost_function(params):
-        job = estimator.run(
-            circuits=[transpiled_circuit],
-            observables=[hamiltonian],
-            parameter_values=[params]
-        )
-        energy = job.result().values[0]
+        if use_real_hardware:
+            # Real hardware uses RuntimeEstimator (V2 API with PUBs)
+            # Use ISA circuit with layout-aware observable
+            pub = (circuit_for_estimator, padded_hamiltonian, params)
+            job = estimator.run(pubs=[pub])
+            result = job.result()
+            energy = result[0].data.evs
+        else:
+            # Simulator uses AerEstimator (V1 API)
+            job = estimator.run(
+                circuits=[circuit_for_estimator],
+                observables=[hamiltonian],
+                parameter_values=[params],
+                shots=512
+            )
+            energy = job.result().values[0]
         return energy
     
     # Initial parameters
     initial_params = np.random.uniform(0, 2*np.pi, qaoa_circuit.num_parameters)
     
-    print(f"\nOptimizing QAOA parameters (SPSA optimizer)...")
-    print(f"  - SPSA is a gradient-free stochastic optimizer")
-    print(f"  - Better for noisy/non-smooth objective functions")
+    if use_real_hardware:
+        # Real hardware: single evaluation to save quantum time
+        print(f"\nRunning SINGLE quantum evaluation (NO OPTIMIZATION)...")
+        print(f"  - Using random initial parameters")
+        print(f"  - ONE quantum job only to save time")
+        optimal_params = initial_params
+        energy_noisy = cost_function(initial_params)
+        print(f"  [OK] Single evaluation complete")
+        print(f"  - Energy: {energy_noisy:.6f}")
+        print(f"  - Function evaluations: 1")
+    else:
+        # Simulator: run optimization (fast on simulator)
+        print(f"\nOptimizing QAOA parameters (SPSA optimizer)...")
+        print(f"  - SPSA is a gradient-free stochastic optimizer")
+        print(f"  - Better for noisy/non-smooth objective functions")
+        print(f"  - Max iterations: {maxiter}")
+        
+        # Use Qiskit's SPSA optimizer
+        spsa = SPSA(maxiter=maxiter)
+        result = spsa.minimize(
+            fun=cost_function,
+            x0=initial_params
+        )
+        
+        optimal_params = result.x
+        energy_noisy = result.fun
+        
+        iterations = result.nfev if hasattr(result, 'nfev') else None
+        
+        converged_msg = "[OK] optimization complete"
+        print(f"  {converged_msg}")
+        print(f"  - Final energy (noisy): {energy_noisy:.6f}")
+        if iterations is not None:
+            print(f"  - Function evaluations: {iterations}")
     
-    # Use Qiskit's SPSA optimizer
-    spsa = SPSA(maxiter=maxiter)
-    result = spsa.minimize(
-        fun=cost_function,
-        x0=initial_params
-    )
-    
-    optimal_params = result.x
-    energy_noisy = result.fun
-    
-    iterations = result.nfev if hasattr(result, 'nfev') else None
-    
-    converged_msg = "[OK] optimization complete"
-    print(f"  {converged_msg}")
-    print(f"  - Final energy (noisy): {energy_noisy:.6f}")
-    if iterations is not None:
-        print(f"  - Function evaluations: {iterations}")
-    
-    # Zero-Noise Extrapolation
+    # Zero-Noise Extrapolation (DISABLED to save quantum time)
     energy_zne = energy_noisy
     energies_by_scale = {}
     
-    if use_zne:
+    if use_zne and False:  # FORCE DISABLED
         if noise_scales is None:
             noise_scales = [1, 3]
         
@@ -300,13 +388,42 @@ def run_qaoa_with_zne(
         print(f"  - Extrapolation slope: {slope:.6f}")
     
     # Get optimal bitstring
-    from qiskit_aer.primitives import Sampler as AerSampler
-    sampler = AerSampler()
-    
-    result_samples = sampler.run(
-        circuits=[measured_circuit],
-        parameter_values=[optimal_params]
-    ).result()
+    if use_real_hardware:
+        # Real hardware sampler (V2 API with PUBs)
+        sampler = RuntimeSampler(mode=backend)
+        sampler.options.default_shots = 1024
+        pub = (measured_circuit, optimal_params)
+        result_samples = sampler.run(pubs=[pub]).result()
+        
+        # Extract most probable bitstring from V2 API
+        pub_result = result_samples[0]
+        counts = pub_result.data.meas.get_counts()
+        full_bitstring = max(counts, key=counts.get)
+        
+        # Get layout to map physical back to logical qubits
+        layout = circuit_for_estimator.layout.initial_layout
+        
+        # Build logical bitstring by extracting bits for our logical qubits
+        optimal_bitstring_str = ''
+        for log_idx in range(n_qubits):
+            phys_qubit = layout[log_idx]
+            phys_idx = phys_qubit._index
+            # Qiskit bitstrings are reversed (qubit 0 is rightmost)
+            bit = full_bitstring[-(phys_idx + 1)] if phys_idx < len(full_bitstring) else '0'
+            optimal_bitstring_str += bit
+        
+        # Reverse to match our convention
+        optimal_bitstring_str = optimal_bitstring_str[::-1]
+    else:
+        # Simulator sampler
+        from qiskit_aer.primitives import Sampler as AerSampler
+        sampler = AerSampler()
+        
+        result_samples = sampler.run(
+            circuits=[measured_circuit],
+            parameter_values=[optimal_params],
+            shots=512
+        ).result()
     
     quasi_dist = result_samples.quasi_dists[0]
     optimal_bitstring = max(quasi_dist, key=quasi_dist.get)
@@ -314,6 +431,7 @@ def run_qaoa_with_zne(
         optimal_bitstring_str = optimal_bitstring.zfill(n_qubits)
     else:
         optimal_bitstring_str = format(int(optimal_bitstring), f'0{n_qubits}b')
+    
     optimal_solution = np.array([int(b) for b in optimal_bitstring_str])
     
     print(f"\nOptimal solution: {optimal_bitstring_str}")
@@ -326,7 +444,7 @@ def run_qaoa_with_zne(
         'energy_noisy': energy_noisy,
         'energy_zne': energy_zne,
         'energies_by_scale': energies_by_scale,
-        'circuit': transpiled_circuit,
+        'circuit': circuit_for_estimator,
         'hamiltonian': hamiltonian
     }
 
@@ -340,7 +458,9 @@ def run_portfolio_qaoa(
     qaoa_depth: int = 3,
     noise_level: float = 0.01,
     use_zne: bool = True,
-    maxiter: int = 500
+    maxiter: int = 500,
+    use_real_hardware: bool = False,
+    backend_name: str = "ibm_brisbane"
 ) -> Dict:
     """
     Complete QAOA portfolio optimization pipeline.
@@ -355,6 +475,8 @@ def run_portfolio_qaoa(
         noise_level: Noise level for simulation
         use_zne: Use Zero-Noise Extrapolation
         maxiter: Max optimizer iterations
+        use_real_hardware: If True, run on IBM Quantum hardware; if False, use simulator
+        backend_name: Name of IBM Quantum backend (e.g., "ibm_brisbane", "ibm_kyoto")
         
     Returns:
         Dictionary with QAOA results
@@ -383,7 +505,9 @@ def run_portfolio_qaoa(
         qaoa_depth=qaoa_depth,
         noise_level=noise_level,
         use_zne=use_zne,
-        maxiter=maxiter
+        maxiter=maxiter,
+        use_real_hardware=use_real_hardware,
+        backend_name=backend_name
     )
     
     return {
