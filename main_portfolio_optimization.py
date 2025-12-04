@@ -16,7 +16,115 @@ from itertools import combinations
 
 # Import our modules
 from portfolio_data_pipeline import run_complete_data_pipeline
-from autoencoder_compression import run_autoencoder_compression, decode_portfolio_weights
+
+# Try to import the PyTorch-based autoencoder. If PyTorch isn't available
+# (DLL load error on some Windows setups), provide a lightweight PCA-based
+# fallback so the rest of the pipeline can run.
+try:
+    from autoencoder_compression import run_autoencoder_compression, decode_portfolio_weights
+    _HAS_TORCH = True
+except Exception:
+    _HAS_TORCH = False
+    from sklearn.decomposition import PCA
+    def run_autoencoder_compression(
+        log_returns,
+        fundamentals,
+        mu,
+        Sigma,
+        latent_dim=8,
+        epochs=1,
+        device='cpu'
+    ):
+        """
+        Fallback compression using PCA when PyTorch is unavailable.
+        Returns a dict with the same minimal keys used by the pipeline.
+        """
+        print("\n[WARNING] PyTorch unavailable — using PCA fallback for compression.")
+
+        # Align tickers
+        common_idx = sorted(set(log_returns.columns) & set(fundamentals.index)) if fundamentals is not None else list(log_returns.columns)
+        if len(common_idx) == 0:
+            common_idx = list(log_returns.columns)
+
+        lr = log_returns[common_idx]
+        tickers = common_idx
+
+        # Transpose so stocks are rows
+        returns_array = lr.T.values  # [N x T]
+
+        # If no fundamentals provided, create simple features
+        if fundamentals is None or fundamentals.shape[0] == 0:
+            features_array = np.zeros((returns_array.shape[0], 1))
+        else:
+            features_array = fundamentals.loc[common_idx].fillna(0).values
+
+        # Fit PCA on returns to get latent codes
+        pca = PCA(n_components=min(latent_dim, returns_array.shape[1]))
+        latent_codes = pca.fit_transform(returns_array)
+
+        # Project mu and Sigma to latent space
+        mu_array = mu.loc[common_idx].values.reshape(-1, 1)
+        mu_latent = latent_codes.T @ mu_array
+        mu_latent = mu_latent.flatten()
+
+        Sigma_array = Sigma.loc[common_idx, common_idx].values
+        # Normalize latent codes and compute latent covariance
+        latent_norm = latent_codes / (np.linalg.norm(latent_codes, axis=0, keepdims=True) + 1e-8)
+        Sigma_latent = latent_norm.T @ Sigma_array @ latent_norm
+        Sigma_latent = (Sigma_latent + Sigma_latent.T) / 2
+        # Regularize
+        n_latent = latent_codes.shape[1]
+        Sigma_latent += np.eye(n_latent) * 1e-6
+
+        return {
+            'model': None,
+            'returns_scaler': None,
+            'features_scaler': None,
+            'returns_tensor': None,
+            'features_tensor': None,
+            'mu_latent': mu_latent,
+            'Sigma_latent': Sigma_latent,
+            'latent_codes': latent_codes,
+            'n_latent': n_latent,
+            'tickers': tickers
+        }
+
+    def decode_portfolio_weights(
+        model,
+        qaoa_solution,
+        latent_codes,
+        tickers,
+        mu_latent=None,
+        device='cpu'
+    ):
+        """
+        Decode binary latent selection to stock weights using PCA latent codes.
+        """
+        print("Decoding latent solution to stock weights (PCA fallback)...")
+        selected_dims = np.where(np.array(qaoa_solution) == 1)[0]
+
+        if mu_latent is not None and len(selected_dims) > 0:
+            mu_selected = np.array(mu_latent)[selected_dims]
+            scores = (latent_codes[:, selected_dims] * mu_selected).sum(axis=1)
+            scores = np.maximum(scores, 0)
+        elif len(selected_dims) > 0:
+            scores = (latent_codes[:, selected_dims] ** 2).sum(axis=1)
+            scores = np.maximum(scores, 0)
+        else:
+            # No dimensions selected -> uniform weights
+            weights = np.ones(len(latent_codes)) / len(latent_codes)
+            portfolio_df = pd.DataFrame({'Ticker': tickers, 'Weight': weights, 'Score': np.zeros(len(weights))}).sort_values('Weight', ascending=False)
+            return {'weights': weights, 'tickers': tickers, 'portfolio_df': portfolio_df, 'selected_dimensions': selected_dims}
+
+        scores_concentrated = scores ** 3
+        if scores_concentrated.sum() > 0:
+            weights = scores_concentrated / scores_concentrated.sum()
+        else:
+            weights = np.ones(len(scores)) / len(scores)
+
+        portfolio_df = pd.DataFrame({'Ticker': tickers, 'Weight': weights, 'Score': scores}).sort_values('Weight', ascending=False)
+
+        return {'weights': weights, 'tickers': tickers, 'portfolio_df': portfolio_df, 'selected_dimensions': selected_dims}
 # Import QUBO/QAOA helpers lazily where needed to avoid heavy dependencies
 # (e.g., qiskit) during quick smoke tests. Modules will be imported inside
 # functions that require them. Provide a lightweight fallback for building
