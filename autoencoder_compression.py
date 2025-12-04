@@ -571,6 +571,7 @@ def decode_portfolio_weights(
     qaoa_solution: np.ndarray,
     latent_codes: np.ndarray,
     tickers: list,
+    mu_latent: np.ndarray = None,
     device: str = 'cpu'
 ) -> Dict:
     """
@@ -593,12 +594,30 @@ def decode_portfolio_weights(
     print(f"  - Selected latent dimensions: {selected_dims.tolist()} ({len(selected_dims)}/{len(qaoa_solution)})")
     print(f"  - Mapping {len(tickers)} stocks to portfolio weights...")
     
-    # Score each stock by its strength in selected dimensions
-    # Use absolute values to capture both positive and negative loadings
-    scores = np.abs(latent_codes[:, selected_dims]).sum(axis=1)
+    # Score each stock by return-weighted strength in selected dimensions
+    # Weight by mu_latent (expected returns) in selected dims for better Sharpe
+    if mu_latent is not None and len(selected_dims) > 0:
+        # Get mu values for selected dimensions
+        mu_selected = mu_latent[selected_dims]
+        # Weight latent codes by expected returns in selected dims
+        scores = (latent_codes[:, selected_dims] * mu_selected).sum(axis=1)
+        # Only keep positive scores (stocks with positive expected return contribution)
+        scores = np.maximum(scores, 0)
+    else:
+        # Fallback: use squared values for concentration
+        scores = (latent_codes[:, selected_dims] ** 2).sum(axis=1)
+        scores = np.maximum(scores, 0)
+    
+    # Apply power function for concentration (higher power = more concentration)
+    # Cube the scores to strongly favor top stocks (creates high concentration)
+    scores_concentrated = scores ** 3
     
     # Normalize to get weights
-    weights = scores / scores.sum()
+    if scores_concentrated.sum() > 0:
+        weights = scores_concentrated / scores_concentrated.sum()
+    else:
+        # Fallback: equal weights if all scores zero
+        weights = np.ones(len(scores)) / len(scores)
     
     # Create portfolio DataFrame
     portfolio_df = pd.DataFrame({
@@ -686,3 +705,4 @@ def run_autoencoder_compression(
 if __name__ == "__main__":
     print("Autoencoder compression module loaded.")
     print("Use run_autoencoder_compression() to compress your portfolio data.")
+
