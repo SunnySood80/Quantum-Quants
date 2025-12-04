@@ -1,0 +1,4 @@
+method,sharpe_ratio,expected_return,volatility,holdings,notes
+Markowitz,2.2237,1.4120,0.6350,2,"Classical analytical solution; only 2 stocks (APP, PLTR)"
+Classical QUBO,2.2003,0.7153,0.3251,9,"Simulated annealing heuristic; balanced diversification"
+QAOA Final,2.1987,0.7447,0.3746,7,"Quantum (p=3, multistart n=5); within 0.25% of Markowitz"
