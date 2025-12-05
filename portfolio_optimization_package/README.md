@@ -61,7 +61,26 @@ This package contains the complete implementation and results of a comparison st
 
 ---
 
-## Quick Start
+### Quick Start
+
+### 0. Run All Three Models at Once
+
+```bash
+# Run all models and generate new results
+python run_all_models.py
+
+# With verbose output showing progress
+python run_all_models.py --verbose
+
+# Save results to custom directory
+python run_all_models.py --output-dir my_custom_results/
+```
+
+This will:
+1. Load the pre-cached S&P 500 data
+2. Run Markowitz, Classical QUBO, and QAOA optimizers
+3. Compare all three methods
+4. Save results to `/results/`
 
 ### 1. Load and Compare Best Results
 

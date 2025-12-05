@@ -1,0 +1,21 @@
+﻿
+[WARNING] PyTorch unavailable ù using PCA fallback for compression.
+Decoding latent solution to stock weights (PCA fallback)...
+Decoding latent solution to stock weights (PCA fallback)...
+
+======================================================================
+FINAL COMPARISON
+======================================================================
+
+Method               Sharpe       Return       Vol          Time (s)  
+----------------------------------------------------------------------
+Markowitz            2.2237       141.20%      63.50%       1.05      
+Classical QUBO       2.1985       73.61%       33.48%       0.37      
+QAOA                 2.1985       73.61%       33.48%       18.89     
+----------------------------------------------------------------------
+[OK] Best: Markowitz (Sharpe: 2.2237)
+[OK] Total runtime: 20.31s
+
+[SUCCESS] All models completed successfully!
+[OK] Results saved to: results/
+
